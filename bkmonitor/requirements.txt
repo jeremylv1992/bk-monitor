@@ -118,7 +118,7 @@ python-magic==0.4.27
 attrdict==2.0.1
 
 # bk-dataview
-dataclasses==0.6
+dataclasses==0.8
 
 # apigw
 apigw-manager==2.0.0
