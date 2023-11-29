@@ -9,7 +9,9 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 import copy
+import json
 import time
+from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Tuple
 
@@ -93,6 +95,9 @@ class BaseStatusResource(Resource):
         """通过采集插件配置，拼接最终 RT_ID"""
         return PluginVersionHistory.get_result_table_id(self.collect_config.plugin, table_name).lower()
 
+    def has_strategies(self) -> bool:
+        return len(self.strategy_ids) > 0
+
 
 class AlertStatusResource(BaseStatusResource):
     """查询数据链路各个阶段的告警状态"""
@@ -105,9 +110,12 @@ class AlertStatusResource(BaseStatusResource):
 
     def perform_request(self, validated_request_data: Dict) -> Dict:
         self.init_data(validated_request_data["collect_config_id"], DataLinkStage(validated_request_data["stage"]))
+        if not self.has_strategy():
+            return {"has_strategies": False}
         strategies = self.get_alert_strategies()
         alert_histogram = self.search_alert_histogram()
         return {
+            "has_strategies": True,
             "has_alert": alert_histogram[-1][1],
             "alert_histogram": alert_histogram,
             "alert_config": {
@@ -138,13 +146,15 @@ class CollectingTargetStatusResource(BaseStatusResource):
             for child in group["child"]:
                 bk_host_ids.append(child["bk_host_id"])
 
-        alert_histogram = self.search_target_alert_histogram(bk_host_ids)
-        targets_alert_histogram = alert_histogram["targets"]
+        targets_alert_histogram = {}
+        if self.has_strategies():
+            alert_histogram = self.search_target_alert_histogram(bk_host_ids)
+            targets_alert_histogram = alert_histogram["targets"]
 
         # 填充主机的告警信息
         for group in instance_status["contents"]:
             for child in group["child"]:
-                child["alert_histogram"] = targets_alert_histogram[child["bk_host_id"]]
+                child["alert_histogram"] = targets_alert_histogram.get(child["bk_host_id"], None)
         return instance_status
 
     def search_target_alert_histogram(self, targets: List[str], time_range: int = 3600) -> Dict:
@@ -331,8 +341,23 @@ class TransferLatestMsgResource(BaseStatusResource):
         series = resource.grafana.graph_unify_query(query_params)["series"]
         msgs = []
         for s in series:
-            msg = "{metric}{dims} {val}".format(metric=metric_name, dims=s["target"], val=s["datapoints"][-1][0])
-            msgs.append({"message": msg, "time": s["datapoints"][-1][1]})
+            val = s["datapoints"][-1][0]
+            ts = s["datapoints"][-1][1]
+            target = s["target"]
+            # 组装消息
+            msg = "{metric}{target} {val}".format(metric=metric_name, target=target, val=val)
+            # 原始数据拼接
+            raw = s["dimensions"]
+            raw[metric_name] = val
+            raw["time"] = ts
+
+            msgs.append(
+                {
+                    "message": msg,
+                    "time": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+                    "raw": json.dumps(raw),
+                }
+            )
         return msgs
 
 
