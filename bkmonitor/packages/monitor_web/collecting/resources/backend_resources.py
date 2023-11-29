@@ -23,6 +23,39 @@ from django.core.paginator import Paginator
 from django.db import connections, transaction
 from django.db.models import Q
 from django.utils.translation import ugettext as _
+
+from bkm_space.api import SpaceApi
+from bkmonitor.data_source import BkMonitorLogDataSource
+from bkmonitor.models import MetricListCache, QueryConfigModel, StrategyModel
+from bkmonitor.utils import shortuuid
+from bkmonitor.utils.cipher import RSACipher
+from bkmonitor.utils.common_utils import logger
+from bkmonitor.utils.local import local
+from bkmonitor.utils.request import get_request
+from bkmonitor.utils.thread_backend import ThreadPool
+
+# from bkmonitor.utils.user import get_global_user
+from bkmonitor.views import serializers
+from constants.cmdb import TargetNodeType, TargetObjectType
+from constants.data_source import DataSourceLabel, DataTypeLabel
+from core.drf_resource import api, resource
+from core.drf_resource.base import Resource
+from core.drf_resource.exceptions import CustomException
+from core.errors.api import BKAPIError
+from core.errors.collecting import (
+    CollectConfigNeedUpgrade,
+    CollectConfigNotExist,
+    CollectConfigNotNeedUpgrade,
+    CollectConfigParamsError,
+    CollectConfigRollbackError,
+    CollectingError,
+    DeleteCollectConfigError,
+    MetricNotExist,
+    SubscriptionStatusError,
+    ToggleConfigStatusError,
+)
+from core.errors.plugin import PluginIDNotExist
+from core.unit import load_unit
 from monitor_web.collecting.constant import (
     COLLECT_TYPE_CHOICES,
     COMPLEX_OPETATION_TYPE,
@@ -46,39 +79,12 @@ from monitor_web.models.custom_report import CustomEventGroup
 from monitor_web.plugin.constant import PluginType
 from monitor_web.plugin.manager import PluginManagerFactory
 from monitor_web.tasks import append_metric_list_cache
+
+# from packages.monitor_web.strategies.loader.datalink_loader import (
+#     DatalinkDefaultAlarmStrategyLoader,
+# )
 from utils import business
 from utils.query_data import TSDataBase
-
-from bkm_space.api import SpaceApi
-from bkmonitor.data_source import BkMonitorLogDataSource
-from bkmonitor.models import MetricListCache, QueryConfigModel, StrategyModel
-from bkmonitor.utils import shortuuid
-from bkmonitor.utils.cipher import RSACipher
-from bkmonitor.utils.common_utils import logger
-from bkmonitor.utils.local import local
-from bkmonitor.utils.request import get_request
-from bkmonitor.utils.thread_backend import ThreadPool
-from bkmonitor.views import serializers
-from constants.cmdb import TargetNodeType, TargetObjectType
-from constants.data_source import DataSourceLabel, DataTypeLabel
-from core.drf_resource import api, resource
-from core.drf_resource.base import Resource
-from core.drf_resource.exceptions import CustomException
-from core.errors.api import BKAPIError
-from core.errors.collecting import (
-    CollectConfigNeedUpgrade,
-    CollectConfigNotExist,
-    CollectConfigNotNeedUpgrade,
-    CollectConfigParamsError,
-    CollectConfigRollbackError,
-    CollectingError,
-    DeleteCollectConfigError,
-    MetricNotExist,
-    SubscriptionStatusError,
-    ToggleConfigStatusError,
-)
-from core.errors.plugin import PluginIDNotExist
-from core.unit import load_unit
 
 # 最低版本依赖
 PLUGIN_VERSION = {PluginType.PROCESS: {"bkmonitorbeat": "0.33.0" if settings.PLATFORM == "ieod" else "2.10.0"}}
@@ -1117,6 +1123,10 @@ class SaveCollectConfigResource(Resource):
 
         # 添加完成采集配置，主动更新指标缓存表
         self.update_metric_cache(collector_plugin)
+
+        # 采集配置完成
+        # DatalinkDefaultAlarmStrategyLoader(collect_config=collect_config, user_id=get_global_user()).run()
+
         return save_result
 
     def update_collector(self, data, deployment_config_params, save_result):
@@ -2626,7 +2636,6 @@ class ListLegacySubscription(Resource):
     """
 
     def perform_request(self, validated_request_data):
-
         # 把已经删除的采集配置也包括在内
         meta_configs = CollectConfigMeta.origin_objects.all()
 

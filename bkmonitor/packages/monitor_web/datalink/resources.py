@@ -20,6 +20,7 @@ from core.drf_resource.base import Resource
 from fta_web.alert.handlers.alert import AlertQueryHandler
 from monitor_web.models.collecting import CollectConfigMeta
 from monitor_web.models.plugin import PluginVersionHistory
+from monitor_web.strategies.loader.datalink_loader import get_datalink_strategy_ids
 
 
 class DataLinkStage(Enum):
@@ -40,7 +41,9 @@ class BaseStatusResource(Resource):
         self.collect_config_id = collect_config_id
         self.collect_config: CollectConfigMeta = CollectConfigMeta.objects.get(id=self.collect_config_id)
         self.stage = stage
-        self.strategy_ids = [206]
+        self.strategy_ids = get_datalink_strategy_ids(
+            self.collect_config.bk_biz_id, self.collect_config_id, self.stage.value
+        )
         self._init = True
 
     def get_alert_strategies(self) -> Tuple[List[int], List[Dict]]:
@@ -109,7 +112,14 @@ class AlertStatusResource(BaseStatusResource):
             "alert_histogram": alert_histogram,
             "alert_config": {
                 "user_group_list": strategies[0]["notice"]["user_group_list"] if len(strategies) > 0 else [],
-                "strategies": [{"name": strategy["name"], "description": strategy["name"]} for strategy in strategies],
+                "strategies": [
+                    {
+                        "name": strategy["name"],
+                        "description": strategy["name"],
+                        "id": strategy["id"],
+                    }
+                    for strategy in strategies
+                ],
             },
         }
 
@@ -232,8 +242,8 @@ class TransferCountSeriesResource(BaseStatusResource):
             interval = 1
             interval_unit = "m"
         else:
-            interval = 1
-            interval_unit = "d"
+            interval = 1440
+            interval_unit = "m"
 
         # 读取采集相关的指标列表
         metrics_alias = []
@@ -323,7 +333,7 @@ class TransferLatestMsgResource(BaseStatusResource):
         for s in series:
             msg = "{metric}{dims} {val}".format(metric=metric_name, dims=s["target"], val=s["datapoints"][-1][0])
             msgs.append({"message": msg, "time": s["datapoints"][-1][1]})
-            return msgs
+        return msgs
 
 
 class StorageStatusResource(Resource):
