@@ -17,6 +17,8 @@ class DatalinkStatusViewSet(ResourceViewSet):
     resource_routes = [
         # 获取采集状态信息
         ResourceRoute("GET", resource.datalink.alert_status, endpoint="alert_status"),
+        # 更新采集订阅用户组
+        ResourceRoute("POST", resource.datalink.update_alert_user_groups, endpoint="update_alert_user_groups"),
         # 获取采集主机状态信息
         ResourceRoute("GET", resource.datalink.collecting_target_status, endpoint="collecting_target_status"),
         # 获取链路数据量

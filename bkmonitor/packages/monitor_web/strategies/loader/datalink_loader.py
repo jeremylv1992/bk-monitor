@@ -9,7 +9,7 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 
-import copy
+import json
 from typing import Dict, List
 
 from django.conf import settings
@@ -25,13 +25,12 @@ from monitor_web.strategies.default_settings.datalink.v1 import (
     DataLinkStage,
     DatalinkStategy,
 )
-from monitor_web.strategies.loader.base import DefaultAlarmStrategyLoaderBase
 from monitor_web.strategies.user_groups import add_member_to_collecting_notice_group
 
 __all__ = ["DatalinkDefaultAlarmStrategyLoader"]
 
 
-class DatalinkDefaultAlarmStrategyLoader(DefaultAlarmStrategyLoaderBase):
+class DatalinkDefaultAlarmStrategyLoader:
     """创建采集配置时，自动创建默认告警策略"""
 
     def __init__(self, collect_config: CollectConfigMeta, user_id: str):
@@ -41,10 +40,8 @@ class DatalinkDefaultAlarmStrategyLoader(DefaultAlarmStrategyLoaderBase):
         self.collect_config_id = self.collect_config.id
         self.collect_config_name = self.collect_config.name
 
-    def get_result_table_id(self, metric_field: str):
-        """计算结果表ID，目前仅支持单指标单表，并且指标为 bkm_up_code 的告警策略"""
-        if metric_field != "bkm_up_code":
-            raise ValueError("Only support bkm_up_code metric strategy...")
+    def get_result_table_id(self):
+        """计算结果表ID，目前仅支持单指标单表，并且指标为 bkm_gather_up 的告警策略"""
         if self.collect_config.plugin.plugin_type == PluginType.PROCESS:
             return "process.perf"
         return PluginVersionHistory.get_result_table_id(self.collect_config.plugin, "__default__")
@@ -67,13 +64,14 @@ class DatalinkDefaultAlarmStrategyLoader(DefaultAlarmStrategyLoaderBase):
         return add_member_to_collecting_notice_group(self.bk_biz_id, self.user_id)
 
     def run(self) -> None:
-        if self.collect_config.plugin.plugin_type in [
+        if self.collect_config.plugin.plugin_type not in [
             PluginType.SCRIPT,
             PluginType.PROCESS,
             PluginType.PUSHGATEWAY,
             PluginType.EXPORTER,
             PluginType.DATADOG,
         ]:
+            logger.info("Plugin ({}) has no initial strategy".format(self.collect_config.plugin.plugin_type))
             return
 
         # 获得默认告警策略
@@ -84,6 +82,7 @@ class DatalinkDefaultAlarmStrategyLoader(DefaultAlarmStrategyLoaderBase):
         # 添加默认告警策略
         for item in strategies_list:
             if self.check_strategy_exist(item["_name"]):
+                logger.info("Strategy({}, {}) has exist ...".format(self.collect_config_id, item["_name"]))
                 continue
             try:
                 self.load_strategy(item)
@@ -97,34 +96,30 @@ class DatalinkDefaultAlarmStrategyLoader(DefaultAlarmStrategyLoaderBase):
     def load_strategy(self, strategy: Dict):
         """加载k8s默认告警策略 ."""
         _name: DatalinkStategy = strategy.pop("_name")
+        # 占位符渲染
+        strategy_str = json.dumps(strategy)
+        strategy_str = strategy_str.replace("${{result_table_id}}", self.get_result_table_id())
+        strategy_str = strategy_str.replace("${{collect_config_id}}", str(self.collect_config_id))
+        strategy_str = strategy_str.replace("${{collect_config_name}}", self.collect_config_name)
+        strategy_str = strategy_str.replace("${{custom_label}}", self.render_label(_name))
+        strategy = json.loads(strategy_str)
+
         # 组装通知信息
         notice_group_id = self.init_notice_group()
         notice = strategy["notice"]
         notice["user_groups"] = [notice_group_id]
         notice["config"]["template"] = settings.DEFAULT_NOTICE_MESSAGE_TEMPLATE
-        # 组装标签
-        labels = strategy.get("labels")
-        labels.append(self.render_label(_name))
-        # 渲染策略名称
-        name = strategy["name"].format(collect_config_name=self.collect_config_name)
-        # 渲染结果表ID
-        items: List[Dict] = []
-        for item in strategy["items"]:
-            _copy_tiem = copy.deepcopy(item)
-            for query_cfg in _copy_tiem["query_configs"]:
-                query_cfg["result_table_id"] = self.get_result_table_id(query_cfg["metric_field"])
-            items.append(item)
 
         # 组装最终结构
         strategy_config = {
             "bk_biz_id": self.bk_biz_id,
-            "name": name,
+            "name": strategy["name"],
             "source": "bk_monitorv3",
             "scenario": "kubernetes",
             "type": "monitor",
-            "labels": labels,
+            "labels": strategy["labels"],
             "detects": strategy["detects"],
-            "items": items,
+            "items": strategy["items"],
             "notice": notice,
             "actions": [],
         }

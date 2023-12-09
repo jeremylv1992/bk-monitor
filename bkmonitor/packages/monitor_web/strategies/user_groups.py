@@ -153,10 +153,10 @@ def add_member_to_collecting_notice_group(bk_biz_id: int, user_id: str) -> int:
         # 目前按照《直接通知》方式进行判定和添加成员
         current_users = duty_arranges[0]["users"]
         for user in current_users:
-            if user["type"] == "user" and user["user_id"] == user_id:
-                return
+            if user["type"] == "user" and user["id"] == user_id:
+                return inst.id
         current_users.append({"id": user_id, "type": "user"})
-        user_group_serializer = UserGroupDetailSlz(inst, data={"duty_arranges": duty_arranges})
+        user_group_serializer = UserGroupDetailSlz(inst, data={"duty_arranges": duty_arranges}, partial=True)
 
     user_group_serializer.is_valid(True)
     inst = user_group_serializer.save()

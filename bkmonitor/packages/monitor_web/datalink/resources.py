@@ -9,7 +9,6 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 import copy
-import json
 import time
 from datetime import datetime
 from enum import Enum
@@ -19,16 +18,24 @@ from bkmonitor.views import serializers
 from constants.alert import EventStatus
 from core.drf_resource import api, resource
 from core.drf_resource.base import Resource
+from core.errors.datalink import CollectorPluginMetaError
 from fta_web.alert.handlers.alert import AlertQueryHandler
+from monitor_web.datalink.storage import get_storager
 from monitor_web.models.collecting import CollectConfigMeta
 from monitor_web.models.plugin import PluginVersionHistory
-from monitor_web.strategies.loader.datalink_loader import get_datalink_strategy_ids
+from monitor_web.strategies.loader.datalink_loader import (
+    DataLinkStage,
+    get_datalink_strategy_ids,
+)
 
 
-class DataLinkStage(Enum):
-    COLLECTING = "collecting"
-    TRANSFER = "transfer"
-    STORAGE = "storage"
+def get_strategy_desc(strategy_name: str) -> str:
+    """待优化描述存储的位置"""
+    if "系统运行异常告警" in strategy_name:
+        return "数据采集遇到系统异常情况，导致无法上报数据，会发送告警。"
+    if "插件执行异常告警" in strategy_name:
+        return """数据采集遇到插件异常情况，导致无法上报数据，会发送告警，目前能覆盖以下插件异常情况：\n- 端口服务无法正常监听\n- 服务输出的内容格式不符合Prom格式"""
+    return ""
 
 
 class BaseStatusResource(Resource):
@@ -37,15 +44,17 @@ class BaseStatusResource(Resource):
         self.collect_config_id: int = None
         self.collect_config: CollectConfigMeta = None
         self.stage: str = None
+        self.strategy_ids: List = []
         self._init = False
 
     def init_data(self, collect_config_id: str, stage: DataLinkStage = None):
         self.collect_config_id = collect_config_id
         self.collect_config: CollectConfigMeta = CollectConfigMeta.objects.get(id=self.collect_config_id)
         self.stage = stage
-        self.strategy_ids = get_datalink_strategy_ids(
-            self.collect_config.bk_biz_id, self.collect_config_id, self.stage.value
-        )
+        if self.stage:
+            self.strategy_ids = get_datalink_strategy_ids(
+                self.collect_config.bk_biz_id, self.collect_config_id, self.stage.value
+            )
         self._init = True
 
     def get_alert_strategies(self) -> Tuple[List[int], List[Dict]]:
@@ -89,6 +98,10 @@ class BaseStatusResource(Resource):
                     continue
                 metric_names.append(field["name"])
             table["metric_names"] = metric_names
+        if len(metric_json) == 0:
+            raise CollectorPluginMetaError(
+                "No metric config in collector plugin({})".format(self.collect_config.plugin.plugin_id)
+            )
         return metric_json
 
     def get_result_table_id(self, table_name: str) -> str:
@@ -110,7 +123,7 @@ class AlertStatusResource(BaseStatusResource):
 
     def perform_request(self, validated_request_data: Dict) -> Dict:
         self.init_data(validated_request_data["collect_config_id"], DataLinkStage(validated_request_data["stage"]))
-        if not self.has_strategy():
+        if not self.has_strategies():
             return {"has_strategies": False}
         strategies = self.get_alert_strategies()
         alert_histogram = self.search_alert_histogram()
@@ -123,13 +136,31 @@ class AlertStatusResource(BaseStatusResource):
                 "strategies": [
                     {
                         "name": strategy["name"],
-                        "description": strategy["name"],
+                        "description": get_strategy_desc(strategy["name"]),
                         "id": strategy["id"],
                     }
                     for strategy in strategies
                 ],
             },
         }
+
+
+class UpdateAlertUserGroupsResource(BaseStatusResource):
+    class RequestSerilizer(serializers.Serializer):
+        collect_config_id = serializers.IntegerField(required=True, label="采集配置ID")
+        stage = serializers.ChoiceField(
+            required=True, label="告警阶段", choices=[stage.value for stage in list(DataLinkStage)]
+        )
+        notice_group_list = serializers.ListField(required=True, child=serializers.IntegerField())
+
+    def perform_request(self, validated_request_data: Dict) -> Dict:
+        self.init_data(validated_request_data["collect_config_id"], DataLinkStage(validated_request_data["stage"]))
+        resource.strategies.update_partial_strategy_v2(
+            bk_biz_id=self.collect_config.bk_biz_id,
+            ids=self.strategy_ids,
+            edit_data={"notice_group_list": validated_request_data["notice_group_list"]},
+        )
+        return "ok"
 
 
 class CollectingTargetStatusResource(BaseStatusResource):
@@ -284,6 +315,10 @@ class TransferCountSeriesResource(BaseStatusResource):
                 metrics_alias.append(metric_alias)
                 metric_idx += 1
 
+        # 没有指标配置，返回空序列
+        if len(metrics_query_configs) == 0:
+            return []
+
         query_params = {
             "bk_biz_id": self.collect_config.bk_biz_id,
             "query_configs": metrics_query_configs,
@@ -355,58 +390,21 @@ class TransferLatestMsgResource(BaseStatusResource):
                 {
                     "message": msg,
                     "time": datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S"),
-                    "raw": json.dumps(raw),
+                    "raw": raw,
                 }
             )
         return msgs
 
 
-class StorageStatusResource(Resource):
+class StorageStatusResource(BaseStatusResource):
     """获取存储状态"""
 
     class RequestSerilizer(serializers.Serializer):
         collect_config_id = serializers.IntegerField(required=True, label="采集配置ID")
 
     def perform_request(self, validated_request_data):
-        return {
-            "info": [
-                {"key": "index", "name": "存储索引名", "value": "trace_agg_scene"},
-                {"key": "cluster_name", "name": "存储集群", "value": "默认集群"},
-                {"key": "expire_time", "name": "过期时间", "value": "7天"},
-                {"key": "copy", "name": "副本数", "value": "1"},
-            ],
-            "status": [
-                {
-                    "name": "集群状态",
-                    "content": {
-                        "keys": [
-                            {"key": "index", "name": "索引"},
-                            {"key": "running_status", "name": "运行状态"},
-                            {"key": "copy", "name": "主分片"},
-                            {"key": "v_copy", "name": "副本分片"},
-                        ],
-                        "values": [
-                            {"index": "object/list", "running_status": "正常", "copy": 8, "v_copy": 8},
-                            {"index": "object/list", "running_status": "正常", "copy": 8, "v_copy": 8},
-                            {"index": "object/list", "running_status": "正常", "copy": 8, "v_copy": 8},
-                        ],
-                    },
-                },
-                {
-                    "name": "索引状态",
-                    "content": {
-                        "keys": [
-                            {"key": "index", "name": "索引"},
-                            {"key": "running_status", "name": "运行状态"},
-                            {"key": "copy", "name": "主分片"},
-                            {"key": "v_copy", "name": "负分片"},
-                        ],
-                        "values": [
-                            {"index": "object/list", "running_status": "正常", "copy": 8, "v_copy": 8},
-                            {"index": "object/list", "running_status": "正常", "copy": 8, "v_copy": 8},
-                            {"index": "object/list", "running_status": "正常", "copy": 8, "v_copy": 8},
-                        ],
-                    },
-                },
-            ],
-        }
+        self.init_data(validated_request_data["collect_config_id"])
+        metric_json = self.get_metrics_json()
+        # 同一个采集项下所有表存储配置都是一致的，取第一个结果表即可
+        storager = get_storager(metric_json[0]["table_id"])
+        return {"info": storager.get_info(), "status": storager.get_status()}

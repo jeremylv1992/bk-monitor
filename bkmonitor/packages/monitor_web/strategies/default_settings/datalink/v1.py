@@ -31,11 +31,9 @@ class DatalinkStategy(enum.Enum):
             DatalinkStategy.COLLECTING_USER_ALARM: "datalink_collecting_user_{collect_config_id}",
         }
 
-    @property
     def render_label(self, **context):
-        return self.label_pattern_mapping[self.value].format(**context)
+        return self.label_pattern_mapping[self].format(**context)
 
-    @property
     def render_escaped_label(self, **context):
         return "/{}/".format(self.render_label(**context))
 
@@ -48,36 +46,45 @@ class DataLinkStage(enum.Enum):
 
 DEFAULT_DATALINK_STRATEGIES = [
     {
-        "_name": DatalinkStategy.COLLECTING_USER_ALARM,
+        "_name": DatalinkStategy.COLLECTING_SYS_ALARM,
         "detects": warning_detects_config(5, 5, 4),
         "items": [
             {
                 "algorithms": warning_algorithms_config("gt", 0),
                 "expression": "a",
                 "functions": [],
-                "name": "count_over_time(bkm_gather_up)",
+                "name": "count(bkm_gather_up)",
                 "no_data_config": NO_DATA_CONFIG,
                 "query_configs": [
                     {
-                        "agg_condition": [{"key": "bkm_up_code", "method": "nregex", "value": ["^2\\d{3}$"]}],
+                        "agg_condition": [
+                            {"key": "bkm_up_code", "method": "nreg", "value": ["^2\\d{3}$"]},
+                            {"key": "bkm_up_code", "method": "neq", "value": ["0"], "condition": "and"},
+                            {
+                                "key": "bk_collect_config_id",
+                                "method": "eq",
+                                "value": ["${{collect_config_id}}"],
+                                "condition": "and",
+                            },
+                        ],
                         "agg_dimension": ["bkm_up_code", "bk_target_ip", "bk_target_cloud_id"],
                         "agg_interval": 60,
-                        "agg_method": "count_over_time",
+                        "agg_method": "COUNT",
                         "alias": "a",
                         "data_source_label": "bk_monitor",
                         "data_type_label": "time_series",
                         "functions": [],
                         "metric_field": "bkm_gather_up",
                         "name": "bkm_gather_up",
-                        "result_table_id": "",
+                        "result_table_id": "${{result_table_id}}",
                         "unit": "",
                     },
                 ],
                 "target": [[]],
             }
         ],
-        "labels": [_("采集内置"), "datalink"],
-        "name": _("数据采集 - {collecting_name} 系统运行异常告警"),
+        "labels": [_("采集内置"), "${{custom_label}}"],
+        "name": _("数据采集 - ${{collect_config_name}} 系统运行异常告警"),
         "notice": DEFAULT_NOTICE,
     },
     {
@@ -88,29 +95,37 @@ DEFAULT_DATALINK_STRATEGIES = [
                 "algorithms": warning_algorithms_config("gt", 0),
                 "expression": "a",
                 "functions": [],
-                "name": "count_over_time(bkm_gather_up)",
+                "name": "count(bkm_gather_up)",
                 "no_data_config": NO_DATA_CONFIG,
                 "query_configs": [
                     {
-                        "agg_condition": [{"key": "bkm_up_code", "method": "regex", "value": ["^2\\d{3}$"]}],
+                        "agg_condition": [
+                            {"key": "bkm_up_code", "method": "reg", "value": ["^2\\d{3}$"]},
+                            {
+                                "key": "bk_collect_config_id",
+                                "method": "eq",
+                                "value": ["${{collect_config_id}}"],
+                                "condition": "and",
+                            },
+                        ],
                         "agg_dimension": ["bkm_up_code", "bk_target_ip", "bk_target_cloud_id"],
                         "agg_interval": 60,
-                        "agg_method": "count_over_time",
+                        "agg_method": "count",
                         "alias": "a",
                         "data_source_label": "bk_monitor",
                         "data_type_label": "time_series",
                         "functions": [],
                         "metric_field": "bkm_gather_up",
                         "name": "bkm_gather_up",
-                        "result_table_id": "",
+                        "result_table_id": "${{result_table_id}}",
                         "unit": "",
                     },
                 ],
                 "target": [[]],
             }
         ],
-        "labels": [_("采集内置"), "datalink"],
-        "name": _("数据采集 - {collecting_name} 插件执行异常告警"),
+        "labels": [_("采集内置"), "${{custom_label}}"],
+        "name": _("数据采集 - ${{collect_config_name}} 插件执行异常告警"),
         "notice": DEFAULT_NOTICE,
     },
 ]
