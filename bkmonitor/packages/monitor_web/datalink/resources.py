@@ -24,18 +24,10 @@ from monitor_web.datalink.storage import get_storager
 from monitor_web.models.collecting import CollectConfigMeta
 from monitor_web.models.plugin import PluginVersionHistory
 from monitor_web.strategies.loader.datalink_loader import (
+    DatalinkDefaultAlarmStrategyLoader,
     DataLinkStage,
-    get_datalink_strategy_ids,
+    DataLinkStategyInfo,
 )
-
-
-def get_strategy_desc(strategy_name: str) -> str:
-    """待优化描述存储的位置"""
-    if "系统运行异常告警" in strategy_name:
-        return "数据采集遇到系统异常情况，导致无法上报数据，会发送告警。"
-    if "插件执行异常告警" in strategy_name:
-        return """数据采集遇到插件异常情况，导致无法上报数据，会发送告警，目前能覆盖以下插件异常情况：\n- 端口服务无法正常监听\n- 服务输出的内容格式不符合Prom格式"""
-    return ""
 
 
 class BaseStatusResource(Resource):
@@ -44,7 +36,8 @@ class BaseStatusResource(Resource):
         self.collect_config_id: int = None
         self.collect_config: CollectConfigMeta = None
         self.stage: str = None
-        self.strategy_ids: List = []
+        self.strategy_map: map[int, DataLinkStategyInfo] = {}
+        self.strategy_ids: List[int] = []
         self._init = False
 
     def init_data(self, collect_config_id: str, stage: DataLinkStage = None):
@@ -52,9 +45,8 @@ class BaseStatusResource(Resource):
         self.collect_config: CollectConfigMeta = CollectConfigMeta.objects.get(id=self.collect_config_id)
         self.stage = stage
         if self.stage:
-            self.strategy_ids = get_datalink_strategy_ids(
-                self.collect_config.bk_biz_id, self.collect_config_id, self.stage.value
-            )
+            loader = DatalinkDefaultAlarmStrategyLoader(collect_config=self.collect_config)
+            self.strategy_map = loader.load_strategy_map(self.stage)
         self._init = True
 
     def get_alert_strategies(self) -> Tuple[List[int], List[Dict]]:
@@ -64,6 +56,10 @@ class BaseStatusResource(Resource):
             for sid in self.strategy_ids
         ]
         return strategies
+
+    def get_strategy_desc(self, strategy_id: int):
+        """获取采集配置描述"""
+        return self.strategy_map.get(strategy_id, {}).get("strategy_desc", "")
 
     def search_alert_histogram(self, time_range: int = 3600) -> List[List]:
         start_time, end_time = int(time.time() - time_range), int(time.time())
@@ -136,7 +132,7 @@ class AlertStatusResource(BaseStatusResource):
                 "strategies": [
                     {
                         "name": strategy["name"],
-                        "description": get_strategy_desc(strategy["name"]),
+                        "description": self.get_strategy_desc(strategy["id"]),
                         "id": strategy["id"],
                     }
                     for strategy in strategies

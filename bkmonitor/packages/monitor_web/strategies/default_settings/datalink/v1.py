@@ -9,9 +9,11 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 import enum
+from typing import Dict, List
 
 from django.utils.translation import ugettext as _
 
+from monitor_web.plugin.constant import PluginType
 from monitor_web.strategies.default_settings.common import (
     DEFAULT_NOTICE,
     NO_DATA_CONFIG,
@@ -20,15 +22,30 @@ from monitor_web.strategies.default_settings.common import (
 )
 
 
-class DatalinkStategy(enum.Enum):
-    COLLECTING_USER_ALARM = "datalink_collecting_user_alarm"
+class GatherType(enum.Enum):
+    METRICBEAT = "metricbeat"
+    SCRIPT = "script"
+    PROCCUSTOM = "proccustom"
+
+
+PLUGIN_TYPE_MAPPING = {
+    PluginType.SCRIPT: GatherType.SCRIPT,
+    PluginType.PROCESS: GatherType.PROCCUSTOM,
+    PluginType.PUSHGATEWAY: GatherType.METRICBEAT,
+    PluginType.EXPORTER: GatherType.METRICBEAT,
+    PluginType.DATADOG: GatherType.METRICBEAT,
+}
+
+
+class DatalinkStrategy(enum.Enum):
     COLLECTING_SYS_ALARM = "datalink_collecting_sys_alarm"
+    COLLECTING_USER_ALARM = "datalink_collecting_user_alarm"
 
     @property
     def label_pattern_mapping(self):
         return {
-            DatalinkStategy.COLLECTING_SYS_ALARM: "datalink_collecting_sys_{collect_config_id}",
-            DatalinkStategy.COLLECTING_USER_ALARM: "datalink_collecting_user_{collect_config_id}",
+            DatalinkStrategy.COLLECTING_SYS_ALARM: "datalink_collecting_sys_{collect_config_id}",
+            DatalinkStrategy.COLLECTING_USER_ALARM: "datalink_collecting_user_{collect_config_id}",
         }
 
     def render_label(self, **context):
@@ -38,15 +55,44 @@ class DatalinkStategy(enum.Enum):
         return "/{}/".format(self.render_label(**context))
 
 
+COLLECTING_SYS_ALARM_DESC = _("数据采集遇到系统异常情况，导致无法上报数据，会发送告警。")
+COLLECTING_USER_METRICBEAT_ALARM_DESC = _(
+    "数据采集遇到插件异常情况，导致无法上报数据，会发送告警，目前能覆盖以下插件异常情况：" "\n- 端口服务无法正常监听" "\n- 服务输出的内容格式不符合Prom格式"
+)
+COLLECTING_USER_SCRIPT_ALARM_DESC = _(
+    "当数据采集时遇到异常情况，导致无法上报数据，则会触发告警，目前能覆盖以下异常情况：" "\n- 脚本执行异常，返回非0状态码" "\n- 脚本打印内容格式不符合Prom格式"
+)
+COLLECTING_USER_PROCCUSTOM_ALARM_DESC = _(
+    "当数据采集时遇到异常情况，导致无法上报数据，则会触发告警，目前能覆盖以下异常情况：" "\n- 用户配置中的PID文件不存在" "\n- 用户配置的匹配规则无命中任何进程"
+)
+
+
+DATALINK_GATHER_STATEGY_DESC = {
+    (DatalinkStrategy.COLLECTING_SYS_ALARM, GatherType.METRICBEAT): COLLECTING_SYS_ALARM_DESC,
+    (DatalinkStrategy.COLLECTING_SYS_ALARM, GatherType.SCRIPT): COLLECTING_SYS_ALARM_DESC,
+    (DatalinkStrategy.COLLECTING_SYS_ALARM, GatherType.PROCCUSTOM): COLLECTING_SYS_ALARM_DESC,
+    (DatalinkStrategy.COLLECTING_USER_ALARM, GatherType.METRICBEAT): COLLECTING_USER_METRICBEAT_ALARM_DESC,
+    (DatalinkStrategy.COLLECTING_USER_ALARM, GatherType.SCRIPT): COLLECTING_USER_SCRIPT_ALARM_DESC,
+    (DatalinkStrategy.COLLECTING_USER_ALARM, GatherType.PROCCUSTOM): COLLECTING_USER_PROCCUSTOM_ALARM_DESC,
+}
+
+
 class DataLinkStage(enum.Enum):
     COLLECTING = "collecting"
     TRANSFER = "transfer"
     STORAGE = "storage"
 
 
+STAGE_STRATEGY_MAPPING: Dict[DataLinkStage, List[DatalinkStrategy]] = {
+    DataLinkStage.COLLECTING: [DatalinkStrategy.COLLECTING_SYS_ALARM, DatalinkStrategy.COLLECTING_USER_ALARM],
+    DataLinkStage.TRANSFER: [],
+    DataLinkStage.STORAGE: [],
+}
+
+
 DEFAULT_DATALINK_STRATEGIES = [
     {
-        "_name": DatalinkStategy.COLLECTING_SYS_ALARM,
+        "_name": DatalinkStrategy.COLLECTING_SYS_ALARM,
         "detects": warning_detects_config(5, 5, 4),
         "items": [
             {
@@ -67,7 +113,7 @@ DEFAULT_DATALINK_STRATEGIES = [
                                 "condition": "and",
                             },
                         ],
-                        "agg_dimension": ["bkm_up_code", "bk_target_ip", "bk_target_cloud_id"],
+                        "agg_dimension": ["bkm_up_code", "bkm_up_code_name", "bk_target_ip", "bk_target_cloud_id"],
                         "agg_interval": 60,
                         "agg_method": "COUNT",
                         "alias": "a",
@@ -76,7 +122,7 @@ DEFAULT_DATALINK_STRATEGIES = [
                         "functions": [],
                         "metric_field": "bkm_gather_up",
                         "name": "bkm_gather_up",
-                        "result_table_id": "${{result_table_id}}",
+                        "result_table_id": "bkmonitorbeat_gather_up.base",
                         "unit": "",
                     },
                 ],
@@ -88,7 +134,7 @@ DEFAULT_DATALINK_STRATEGIES = [
         "notice": DEFAULT_NOTICE,
     },
     {
-        "_name": DatalinkStategy.COLLECTING_USER_ALARM,
+        "_name": DatalinkStrategy.COLLECTING_USER_ALARM,
         "detects": warning_detects_config(5, 5, 4),
         "items": [
             {
@@ -101,14 +147,8 @@ DEFAULT_DATALINK_STRATEGIES = [
                     {
                         "agg_condition": [
                             {"key": "bkm_up_code", "method": "reg", "value": ["^2\\d{3}$"]},
-                            {
-                                "key": "bk_collect_config_id",
-                                "method": "eq",
-                                "value": ["${{collect_config_id}}"],
-                                "condition": "and",
-                            },
                         ],
-                        "agg_dimension": ["bkm_up_code", "bk_target_ip", "bk_target_cloud_id"],
+                        "agg_dimension": ["bkm_up_code", "bkm_up_code_name", "bk_target_ip", "bk_target_cloud_id"],
                         "agg_interval": 60,
                         "agg_method": "count",
                         "alias": "a",
@@ -117,7 +157,7 @@ DEFAULT_DATALINK_STRATEGIES = [
                         "functions": [],
                         "metric_field": "bkm_gather_up",
                         "name": "bkm_gather_up",
-                        "result_table_id": "${{result_table_id}}",
+                        "result_table_id": "bkmonitorbeat_gather_up.base",
                         "unit": "",
                     },
                 ],
@@ -129,3 +169,6 @@ DEFAULT_DATALINK_STRATEGIES = [
         "notice": DEFAULT_NOTICE,
     },
 ]
+
+
+RULE_GROUP_NAME = "采集状态告警规则组"
